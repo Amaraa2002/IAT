@@ -239,7 +239,7 @@ function endPhase(){
     testFinishedAt = new Date().toISOString();
     document.getElementById('stimulusWord').textContent = 'All 7 parts done!';
     document.getElementById('errorX').classList.add('hidden');
-    finalizeResults(); // === HERE ===
+    finalizeResults();
   }
 }
 
@@ -291,12 +291,7 @@ document.addEventListener('keydown',(e)=>{
       expected_key: expectedKey,
       pressed_key: key,
       correct,
-      rt_ms: rt,
-      participant_id: participant.id,
-      age: participant.age,
-      gender: participant.gender,
-      started_at: testStartedAt,
-      finished_at: '' // fill at the very end
+      rt_ms: rt
     });
 
     if(correct===1){ i++; showWord(); }
@@ -307,29 +302,38 @@ document.addEventListener('keydown',(e)=>{
 document.getElementById('btnStart').addEventListener('click', (e)=>{ e.preventDefault(); startPart(); });
 
 /* ========== CSV + Auto Email (3-phase style) + Completion UI ========== */
-/** 1) GAS endpoint — шаардлагатай бол өөрийн шинэ exec URL-р солиорой */
 const AUTO_EMAIL_ENDPOINT = "https://script.google.com/macros/s/AKfycbyabOqbrxqIXXE_gI0W-ykvOJY1zSLAZr4s3NegM054vn4RIcfJMpY2CgB8JDJReG0z/exec";
 
-/** 2) CSV builder */
+/*** ✅ UTF-8 BOM — Excel-д Монгол үг зөв харагдахад ЧУХАЛ ***/
+const UTF8_BOM = "\uFEFF";
+
+/** CSV builder (meta нь зөвхөн эхний мөрөнд) */
 function toCSV(rows){
   const cols = [
     'idx','part_index','phase_name','part_trial_idx',
-    'word','expected_key','pressed_key','correct','rt_ms',
-    'participant_id','age','gender','started_at','finished_at'
+    'word','expected_key','pressed_key','correct','rt_ms'
   ];
   const header = cols.join(',');
-  const body = rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
-  return header + '\n' + body;
+
+  const body = rows.map(r =>
+    cols.map(c => `"${String(r[c] ?? '').replace(/"/g,'""')}"`).join(',')
+  ).join('\n');
+
+  const metaLine =
+    `participant_id=${participant.id},age=${participant.age},gender=${participant.gender},started_at=${testStartedAt},finished_at=${testFinishedAt}`;
+
+  // BOM + meta + data
+  return UTF8_BOM + metaLine + '\n' + header + '\n' + body;
 }
 
-/** 3) Имэйл илгээх — 3-phase жишээтэй адил JSON payload (csv_data дотор CSV) */
+/** Имэйл илгээх — csv_data дотор BOM-той CSV явна */
 async function sendAutoEmail(payload){
   try{
     await fetch(AUTO_EMAIL_ENDPOINT, {
       method:'POST',
       headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify(payload),
-      mode:'no-cors'          // өмнөх 3-phase шиг
+      mode:'no-cors'
     });
     console.log('Email send requested (no-cors).');
   }catch(err){
@@ -337,16 +341,13 @@ async function sendAutoEmail(payload){
   }
 }
 
-/** 4) Дуусгахад — payload бүтээж имэйл илгээнэ, дараа нь UI зурна */
 function finalizeResults(){
-  records.forEach(r => r.finished_at = testFinishedAt);
-
   const csv = toCSV(records);
   const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
   const safeId = (participant.id||'anon').replace(/[^\w]/g,'_');
   const filename = `iat_results_${safeId}_${ts}.csv`;
 
-  // Phase статистик (энгийн хэлбэр)
+  // Phase stats (товч)
   const phaseStats = Array.from({length: TOTAL_PARTS}, (_, idx) => {
     const phaseRows = records.filter(r => r.part_index === (idx+1));
     const avgE = avg(phaseRows.filter(x => x.pressed_key === 'E').map(x => x.rt_ms));
@@ -362,7 +363,6 @@ function finalizeResults(){
 
   const totalTime = records.reduce((sum, r) => sum + (Number(r.rt_ms)||0), 0);
 
-  // === 3-phase payload загвар ===
   const payload = {
     meta: {
       generated_at: new Date().toISOString(),
@@ -380,25 +380,22 @@ function finalizeResults(){
       started_at: testStartedAt,
       finished_at: testFinishedAt
     },
-    test_records: records,   // хүсвэл авч болно
-    csv_data: csv            // ГОЛ НЬ: CSV-г энд өгнө
+    test_records: records,
+    csv_data: csv
   };
 
-  // Имэйл автоматаар (GAS талд csv_data авч хавсаргадаг байх ёстой)
+  // Имэйл автоматаар
   sendAutoEmail(payload);
 
-  // Хэрэглэгчийн completion UI
+  // Completion UI
   stage.classList.add('hidden');
   renderCompletionUI(csv, filename);
 }
 
 function avg(a){ if(!a.length) return NaN; return a.reduce((x,y)=>x+y,0)/a.length; }
+function escapeHtml(str){ return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
 
-function escapeHtml(str){
-  return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
-}
-
-/** 5) Participant UI — таталт гараар, preview харах товчтой */
+/** Participant UI — таталт гараар */
 function renderCompletionUI(csv, filename){
   const previewText = [
     `Participant: ${participant.id} | Age: ${participant.age} | Gender: ${participant.gender}`,
@@ -411,22 +408,21 @@ function renderCompletionUI(csv, filename){
   completionMount.innerHTML = `
     <div class="results-box">
       <div class="results-title">Тест дууслаа — Танд баярлалаа</div>
-
       <div class="results-role"><strong>Оролцогч:</strong> Хүсвэл өөрөө файлаа татаж авч болно.</div>
-
       <div class="results-actions">
         <button class="btn btn-success" id="btn-download">Файлыг татаж авах (CSV)</button>
         <button class="btn btn-warning" id="btn-toggle">Хариултыг харах</button>
       </div>
       <div class="small-note">Тайлбар: Имэйл админ тал руу автоматаар илгээгдсэн.</div>
-
       <pre class="results-preview" id="results-preview" style="display:none;">${escapeHtml(previewText)}</pre>
     </div>
   `;
 
   document.getElementById('btn-download').onclick = function(){
+    // ✅ BOM-тай CSV-г UTF-8 гэж зарлаж татуулах
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.href=URL.createObjectURL(blob);
     a.download=filename;
     document.body.appendChild(a);
     a.click();
